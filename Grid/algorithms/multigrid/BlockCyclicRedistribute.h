@@ -24,10 +24,46 @@ Author: Peter Boyle <pboyle@bnl.gov>
 NAMESPACE_BEGIN(Grid);
 
 ///////////////////////////////////////////////////////////////////////////////
+// My rows of a distributed dense matrix in the 1D rank-major row layout:
+// rank r owns contiguous global rows [rowStart[r], rowStart[r+1]) of an
+// N x N matrix, stored rows x cols column major, ld = rows; element (i,j)
+// at data[i + j*ld].  This is the layout the stencil->dense import
+// produces and the apply slab consumes; the 2D inverse slots between them
+// through the redistribution below.
+///////////////////////////////////////////////////////////////////////////////
+class BlockRows
+{
+public:
+  deviceVector<ComplexD> data;
+  int64_t                rows;
+  int64_t                cols;
+  int64_t                ld;
+
+  BlockRows()
+  {
+    rows = 0;
+    cols = 0;
+    ld   = 0;
+  }
+  void Resize(int64_t r, int64_t c)
+  {
+    rows = r;
+    cols = c;
+    ld   = r;
+    data.resize((uint64_t)r*c);
+  }
+  ComplexD *ColumnWindow(int64_t col0)
+  {
+    GRID_ASSERT( col0 >= 0 );
+    GRID_ASSERT( col0 <= cols );
+    return &data[(uint64_t)col0*ld];
+  }
+};
+
+///////////////////////////////////////////////////////////////////////////////
 // Stage 4 of the 2D distributed dense inverse: redistribution between the
-// 1D rank-major row layout (BlockRows: rank r owns contiguous global rows
-// [rowStart[r], rowStart[r+1]) of an N x N matrix, stored rows x N column
-// major with ld = rows) and the 2D block-cyclic layout.
+// 1D rank-major row layout (BlockRows above) and the 2D block-cyclic
+// layout.
 //
 // This is what lets the EXISTING stencil->dense import, its certificate,
 // the fp32 slab conversion and the apply path all remain byte-for-byte

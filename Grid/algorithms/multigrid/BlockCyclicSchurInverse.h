@@ -28,12 +28,11 @@ NAMESPACE_BEGIN(Grid);
 // Stage 3 of the 2D distributed dense inverse: the recursive Schur
 // complement on a block-cyclic matrix, in place.
 //
-// The nine-step algebra is IDENTICAL to RecursiveSchurInverse (1D); what
-// changes is the decomposition.  The recursion splits the GLOBAL INDEX
-// RANGE at the block boundary nearest the midpoint -- not the rank range --
-// so every rank owns part of every sub-block at every depth, and the
-// ownership gating (inI/inJ, dummy operands, zero-width rank ranges) of the
-// 1D scheme has no analogue here: it is simply gone.
+// The recursion splits the GLOBAL INDEX RANGE at the block boundary
+// nearest the midpoint -- not the rank range as the retired 1D
+// RecursiveSchurInverse did -- so every rank owns part of every sub-block
+// at every depth, and the ownership gating (inI/inJ, dummy operands,
+// zero-width rank ranges) a 1D scheme needs has no analogue here.
 //
 //   I = [c0,m)   J = [m,c1)      (block-aligned, m the mid block boundary)
 //   1. recurse I  :  A11 -> A11inv                        (in place)
@@ -64,8 +63,7 @@ NAMESPACE_BEGIN(Grid);
 // LEAF.  A leaf is a single diagonal block, and block (b,b) of a
 // block-cyclic layout lives ENTIRELY on rank (b%Pr, b%Pc).  The leaf
 // inversion is therefore purely local -- pack the strided block dense,
-// GridBLASInverse, unpack -- with NO communication and no assembly.  The
-// leaf-assembly transport question of the 1D scheme does not arise.
+// GridBLASInverse, unpack -- with NO communication and no assembly.
 // Successive leaves cycle over ranks, so leaf work is naturally spread.
 //
 // COMMUNICATION.  Every transfer in the whole inversion is a
@@ -75,12 +73,9 @@ NAMESPACE_BEGIN(Grid);
 // one optional exception: it performs reductions, and is only ever called
 // explicitly by a caller who wants the numbers.
 //
-// NUMERICS.  No pivoting, exactly as the 1D scheme: every A11 and every
-// Schur complement met on the way down must be non-singular.  The growth
-// telemetry stands in for pivoting; note the recursion splits differently
-// from the 1D rank-range tree, so DIFFERENT sub-blocks are inverted and
-// telemetry values are NOT comparable with the 1D implementation's --
-// re-baseline, do not compare.
+// NUMERICS.  No pivoting: every A11 and every Schur complement met on the
+// way down must be non-singular.  The growth telemetry stands in for
+// pivoting.
 ///////////////////////////////////////////////////////////////////////////////
 
 class BlockCyclicSchurInverse
@@ -92,14 +87,18 @@ public:
   // Telemetry: accumulated LOCALLY, no comms unless ReportTelemetry().
   double                  telLeafMaxInv;
   uint64_t                nLeaf;
-  // BIG LEAVES (SCHUR2D_LEAF_SPAN=s, default 1 = off).  Below span s blocks a
-  // sub-block lives on <= s of the Pr process rows / s of the Pc columns; the
-  // SUMMA rings then run on a few ranks while the rest block in their next
-  // SendToRecvFrom (histogram 2026-08-27: 93% of ring time in the 3.7 MB
-  // single-block panels of exactly these levels).  Instead: gather the
-  // (s*nb)^2 sub-block to one rank, invert locally, scatter back.
-  int                     leafSpan = -1;
-  int                     leafLU   = -1;  // SCHUR2D_LEAF_LU=1: big-leaf inverse via GridBLASInverse::inverseLU (blocked getrf_64 + identity getrs_64) instead of getri_batched
+  // BIG LEAVES.  Below span s blocks a sub-block lives on <= s of the Pr
+  // process rows / s of the Pc columns; when s is small RELATIVE TO THE
+  // GRID the SUMMA rings run on a few ranks while the rest block in their
+  // next SendToRecvFrom (histogram 2026-08-27: 93% of ring time in the
+  // 3.7 MB single-block panels of exactly these levels).  Instead: gather
+  // the (s*nb)^2 sub-block to one rank, invert locally (inverseLU), scatter
+  // back.  Fires only while span < min(Pr,Pc) -- when the whole grid
+  // participates the rings are not degenerate and gathering would only
+  // concentrate memory (and at the top of the tree, gather the whole
+  // matrix).  Default 9: banked on Frontier 2026-08-27 (invert 132 -> 27.6 s
+  // at N=138240 on a 16x18 grid; s=18 gave 30.6, s=4 37.0).
+  int                     leafSpan = 9;
   uint64_t                nBigLeaf = 0;  int64_t maxBigW = 0;
   double                  tBigGather = 0, tBigInv = 0, tBigScatter = 0;
   uint64_t                nNode;
@@ -284,18 +283,9 @@ public:
     }
     tBigGather += usecond();
 
-    // ---- invert on root ----
+    // ---- invert on root: blocked getrf_64 + identity getrs_64 ----
     tBigInv -= usecond();
-    if ( leafLU < 0 ) leafLU = getenv("SCHUR2D_LEAF_LU") ? atoi(getenv("SCHUR2D_LEAF_LU")) : 0;
-    if ( me == root ) {
-      if ( leafLU ) {
-        INV.inverseLU(W, &dense[0]);
-      } else {
-        deviceVector<ComplexD*> bp(1); std::vector<ComplexD*> ptr(1); ptr[0] = &dense[0];
-        acceleratorCopyToDevice(&ptr[0], &bp[0], sizeof(ComplexD*));
-        INV.inverseBatched(W, bp);
-      }
-    }
+    if ( me == root ) INV.inverseLU(W, &dense[0]);
     tBigInv += usecond();
 
     // ---- scatter ----
@@ -330,8 +320,7 @@ public:
     int64_t span = b1-b0;
     GRID_ASSERT( span >= 1 );
     if ( span == 1 ) { Leaf(A, b0); return; }
-    if ( leafSpan < 0 ) leafSpan = getenv("SCHUR2D_LEAF_SPAN") ? atoi(getenv("SCHUR2D_LEAF_SPAN")) : 1;
-    if ( span <= leafSpan ) { BigLeaf(A, b0, b1); return; }
+    if ( span <= leafSpan && span < std::min(L.Pr,L.Pc) ) { BigLeaf(A, b0, b1); return; }
     GRID_TRACE("SchurNode");
     nNode++;
 
@@ -376,150 +365,11 @@ public:
   // PUBLIC ENTRY.  In-place inverse of the whole matrix.  Scratch (4x the
   // matrix footprint) is allocated here and released on return.
   ///////////////////////////////////////////////////////////////////////////
-  ///////////////////////////////////////////////////////////////////////////
-  // POWER - CLOCK - GROUND.  Before the inverse runs, print the preconditions
-  // that have differed between fast (62 s) and slow (133-141 s) runs of the
-  // SAME inverse, and measure ONE SendToRecvFrom to the ACTUAL ring partners
-  // at three sizes, device and host buffers.  Same code in the harness and in
-  // production, so the two processes are compared on the identical primitive
-  // before any explanation of the SUMMA rings is attempted.
-  // SCHUR2D_PROBE=0 disables (costs ~0.1-0.5 s).
-  ///////////////////////////////////////////////////////////////////////////
-  void Probe(BlockCyclicMatrix &A)
-  {
-    BlockCyclicLayout &L = A.layout;
-    GridBase *grid = A.grid;
-    int me = grid->ThisRank();
-    // --- banner ---
-    int thr = -1;
-#ifdef GRID_COMMS_MPI3
-    MPI_Query_thread(&thr);
-#endif
-    const char *omp = getenv("OMP_NUM_THREADS");
-    MemoryStatus ms = MemoryManager::GetFootprint();
-    std::cout << GridLogMessage << "Schur2D PROBE banner: MPI thread level " << thr
-              << " (0 single,1 funneled,2 serialized,3 multiple)  OMP_NUM_THREADS=" << (omp?omp:"unset")
-              << "  MemoryManager device bytes " << ms.DeviceBytes/1.0e9 << " GB (LRU " << ms.DeviceLRUBytes/1.0e9
-              << " GB, cap " << ms.DeviceMaxBytes/1.0e9 << " GB)"
-              << "  grid " << L.Pr << "x" << L.Pc << " nb " << L.nb << std::endl;
-#ifdef GRID_HIP
-    if ( me==0 ) acceleratorMem();
-#endif
-    // --- ring partners exactly as SUMMA uses them ---
-    int prow=L.prow, pcol=L.pcol, Pr=L.Pr, Pc=L.Pc;
-    struct Ring { const char *name; int dest, src; };
-    Ring rings[2] = { {"ringA(row, q+-1)", prow*Pc + (pcol+1)%Pc,       prow*Pc + (pcol-1+Pc)%Pc},
-                      {"ringB(col, p+-1)", ((prow+1)%Pr)*Pc + pcol,     ((prow-1+Pr)%Pr)*Pc + pcol} };
-    // 2/3/4 MB added 2026-08-27: the SUMMA histogram put 93% of ring time in
-    // [2,4) MB messages at 0.3 GB/s while >=4 MB ran at 11-13 GB/s.
-    const int NSZ = 6;
-    uint64_t sizes[NSZ] = { 64ull*1024, 1024ull*1024, 2048ull*1024, 3072ull*1024, 4096ull*1024, 8ull*1024*1024 };
-    uint64_t maxb = sizes[NSZ-1];
-    deviceVector<char> dsend(maxb), drecv(maxb);
-    std::vector<char>  hsend(maxb), hrecv(maxb);
-    for(int r=0;r<2;r++){
-      if ( (r==0 && Pc==1) || (r==1 && Pr==1) ) continue;
-      int off = grid->IsOffNode(rings[r].dest);
-      for(int si=0;si<NSZ;si++){
-        uint64_t bytes = sizes[si];
-        // warm one, time five, both memory spaces
-        grid->SendToRecvFrom(&dsend[0], rings[r].dest, &drecv[0], rings[r].src, bytes);
-        double t0=usecond();
-        for(int i=0;i<5;i++) grid->SendToRecvFrom(&dsend[0], rings[r].dest, &drecv[0], rings[r].src, bytes);
-        double td=(usecond()-t0)/5.0;
-        grid->SendToRecvFrom(&hsend[0], rings[r].dest, &hrecv[0], rings[r].src, bytes);
-        t0=usecond();
-        for(int i=0;i<5;i++) grid->SendToRecvFrom(&hsend[0], rings[r].dest, &hrecv[0], rings[r].src, bytes);
-        double th=(usecond()-t0)/5.0;
-        // spread over ranks
-        RealD dmax=td, dmin=-td; grid->GlobalMax(dmax); grid->GlobalMax(dmin); dmin=-dmin;
-        std::cout << GridLogMessage << "Schur2D PROBE " << rings[r].name << (off?" OFF-node":" on-node")
-                  << " " << bytes/1024 << " KB: device " << td << " us (" << bytes/td/1.0e3 << " GB/s) [min/max over ranks " << dmin << "/" << dmax << " us]"
-                  << "  host " << th << " us (" << bytes/th/1.0e3 << " GB/s)" << std::endl;
-      }
-    }
-    ///////////////////////////////////////////////////////////////////////
-    // ONE-GCD LEAF MICROBENCHMARK (boss only).  The big-leaf inverse at
-    // W=4320 measured 0.53 s with BOTH getri_batched and getrf_64+getrs_64
-    // (2026-08-27) -- ~0.4 TF/s on a GCD that runs zgemm at ~15.  Time the
-    // three primitives in isolation on a well-conditioned dense matrix so the
-    // leaf's rate can be compared with the machine's, and getrf split from
-    // getrs.  Sizes: the W of span 4 / 9 / 18 leaves on accelerator builds;
-    // tiny on CPU builds (Eigen would take minutes at 4320).
-    ///////////////////////////////////////////////////////////////////////
-    if ( me == 0 ) {
-#if defined(GRID_HIP) || defined(GRID_CUDA) || defined(GRID_SYCL)
-      std::vector<int64_t> Ws({1920, 4320, 8640});
-#else
-      std::vector<int64_t> Ws({240, 480});
-#endif
-      for(int64_t W : Ws){
-        deviceVector<ComplexD> M((uint64_t)W*W), C((uint64_t)W*W);
-        { ComplexD *m = &M[0]; const int64_t WW = W;   // diagonally dominant: (i==j ? W : 0) + cos/sin noise
-          accelerator_for(idx,(uint64_t)W*W,1,{ int64_t j=idx/WW, i=idx-j*WW; double x=0.37*i+0.61*j;
-            m[idx] = ComplexD((i==j)?(double)WW:0.0,0.0) + ComplexD(std::cos(x),std::sin(1.3*x)); });
-          accelerator_barrier(); }
-        double flopLU = 8.0/3.0*(double)W*W*W;          // complex LU  ~ (4 real flops per complex mult-add) * (2/3 n^3)
-        double flopGEMM = 8.0*(double)W*W*W;            // complex GEMM
-        // 1. getri_batched (batch 1)
-        double tb;
-        { deviceVector<ComplexD*> bp(1); std::vector<ComplexD*> ptr(1); ptr[0]=&M[0];
-          acceleratorCopyToDevice(&ptr[0],&bp[0],sizeof(ComplexD*));
-          double t0=usecond(); INV.inverseBatched(W,bp); tb=usecond()-t0; }
-        // 2. inverseLU (getrf_64 + identity getrs_64), timed inside
-        double tl; { double t0=usecond(); INV.inverseLU(W,&M[0]); tl=usecond()-t0; }
-        // 3. one zgemm W x W x W for the machine rate
-        double tg;
-        { deviceVector<ComplexD*> ap(1),bp(1),cp(1); std::vector<ComplexD*> ptr(1);
-          ptr[0]=&M[0]; acceleratorCopyToDevice(&ptr[0],&ap[0],sizeof(ComplexD*)); acceleratorCopyToDevice(&ptr[0],&bp[0],sizeof(ComplexD*));
-          ptr[0]=&C[0]; acceleratorCopyToDevice(&ptr[0],&cp[0],sizeof(ComplexD*));
-          double t0=usecond();
-          SUMMA.BLAS.gemmBatched(GridBLAS_OP_N,GridBLAS_OP_N,(int)W,(int)W,(int)W,ComplexD(1.0,0.0),ap,(int)W,bp,(int)W,ComplexD(0.0,0.0),cp,(int)W);
-          SUMMA.BLAS.synchronise(); tg=usecond()-t0; }
-        std::cout << GridLogMessage << "Schur2D PROBE leaf W=" << W
-                  << ": getri_batched " << tb/1.0e6 << " s (" << flopLU/tb/1.0e6 << " TF/s)"
-                  << "  getrf_64+getrs_64 " << tl/1.0e6 << " s (getrf " << INV.lastGetrfUs/1.0e6 << " getrs " << INV.lastGetrsUs/1.0e6 << ")"
-                  << "  zgemm " << tg/1.0e6 << " s (" << flopGEMM/tg/1.0e6 << " TF/s)" << std::endl;
-      }
-    }
-    ///////////////////////////////////////////////////////////////////////
-    // The SUMMA's conditions, one at a time, at 8 MB on ring B:
-    //  (a) LARGE persistent buffers (the rings use ~0.5 GB Abuf/Bbuf), sending
-    //      from offset 0 and from deep inside the region;
-    //  (b) a pack kernel + accelerator_barrier immediately before each
-    //      message, as the SUMMA does.
-    // Isolated 8 MB messages ran at 11-20 GB/s while the SUMMA averaged 2.1;
-    // whichever variant drops to ~2 GB/s names the condition.
-    ///////////////////////////////////////////////////////////////////////
-    {
-      int r = (Pr>1) ? 1 : 0;
-      uint64_t bytes = sizes[NSZ-1];
-      uint64_t big = 512ull*1024*1024;
-      deviceVector<char> bsend(big), brecv(big);
-      for(int variant=0; variant<3; variant++){
-        uint64_t so = (variant==1) ? big-bytes : 0;               // deep offset in the large region
-        char *sp=&bsend[so], *rp=&brecv[so];
-        grid->SendToRecvFrom(sp, rings[r].dest, rp, rings[r].src, bytes);
-        double t0=usecond();
-        for(int i=0;i<5;i++){
-          if ( variant==2 ) { accelerator_for(k, bytes/8, 1, { ((uint64_t *)sp)[k] = (uint64_t)k; }); accelerator_barrier(); }
-          grid->SendToRecvFrom(sp, rings[r].dest, rp, rings[r].src, bytes);
-        }
-        double t=(usecond()-t0)/5.0;
-        RealD tmax=t, tmin=-t; grid->GlobalMax(tmax); grid->GlobalMax(tmin); tmin=-tmin;
-        const char *vn[3]={"512MB buffer, offset 0","512MB buffer, offset 504MB","pack kernel + barrier before each send"};
-        std::cout << GridLogMessage << "Schur2D PROBE " << rings[r].name << " 8192 KB device, " << vn[variant] << ": "
-                  << t << " us (" << bytes/t/1.0e3 << " GB/s) [min/max over ranks " << tmin << "/" << tmax << " us]" << std::endl;
-      }
-    }
-  }
-
   void Invert(BlockCyclicMatrix &A)
   {
     BlockCyclicLayout &L = A.layout;
     GRID_ASSERT( L.N >= 1 );
     int64_t nblocks = (L.N + L.nb - 1)/L.nb;
-    if ( !(getenv("SCHUR2D_PROBE") && atoi(getenv("SCHUR2D_PROBE"))==0) ) Probe(A);
 
     BlockCyclicMatrix Bt(A.grid, L.N, L.nb, L.Pr, L.Pc);
     BlockCyclicMatrix Ct(A.grid, L.N, L.nb, L.Pr, L.Pc);
@@ -550,8 +400,8 @@ public:
               << std::endl;
     if ( nBigLeaf ) {
       RealD ti = tBigInv/1.0e6; grid->GlobalMax(ti);     // inverse runs on the root of each leaf: report the max over ranks
-      std::cout << GridLogMessage << "BlockCyclicSchurInverse: BIG LEAVES (SCHUR2D_LEAF_SPAN=" << leafSpan
-                << (leafLU>0 ? ", SCHUR2D_LEAF_LU=1: getrf_64+getrs_64" : ", getri_batched") << "): " << nBigLeaf
+      std::cout << GridLogMessage << "BlockCyclicSchurInverse: BIG LEAVES (span " << leafSpan
+                << ", inverseLU): " << nBigLeaf
                 << " leaves, max W " << maxBigW
                 << "  boss secs: gather " << tBigGather/1.0e6 << " scatter " << tBigScatter/1.0e6
                 << "  inverse (max over ranks) " << ti << std::endl;
@@ -576,8 +426,7 @@ public:
     // same sequence of sizes).  Time is wall time inside SendToRecvFrom, so it
     // includes waiting for the partner -- a bucket whose GB/s is far below the
     // probe's for the same size is wait, not wire.
-    std::cout << GridLogMessage << "BlockCyclicSumma ring histogram (boss):  size-bucket  msgs  GB  xfer-secs  GB/s  %time"
-              << (SUMMA.handshake>0 ? "  handshake-secs (partner wait, excluded from xfer)" : "") << std::endl;
+    std::cout << GridLogMessage << "BlockCyclicSumma ring histogram (boss):  size-bucket  msgs  GB  xfer-secs  GB/s  %time" << std::endl;
     std::streamsize oldprec = std::cout.precision();
     for(int b=0;b<SUMMA.NHIST;b++){
       if ( !SUMMA.histN[b] ) continue;
@@ -590,7 +439,6 @@ public:
                 << std::setw(9) << std::setprecision(3) << sec
                 << std::setw(9) << std::setprecision(3) << (sec>0 ? g/sec : 0.0)
                 << std::setw(8) << std::setprecision(3) << (ring>0 ? 100.0*sec/ring : 0.0);
-      if ( SUMMA.handshake>0 ) std::cout << std::setw(12) << std::setprecision(3) << SUMMA.histHsUs[b]/1.0e6;
       std::cout << std::endl;
     }
     std::cout.precision(oldprec);
