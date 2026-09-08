@@ -453,9 +453,23 @@ public:
 	double *dbuf =(double *) packet.recv_buf;
 	float  *fbuf =(float  *) packet.compressed_recv_buf;
 
+	// BUG FIX 2026-09-07: the lane structure is a carefully designed
+	// GPU optimisation -- lane = threadIdx.y puts adjacent threads on
+	// adjacent words, fully coalesced.  On CPU builds there are no
+	// SIMT lanes and acceleratorSIMTlane() is identically zero, so
+	// this loop converted only 1/nsimd of the words and the rest of
+	// the halo silently kept STALE buffer content (deterministic
+	// wrong answers whenever the previous occupant differed; caught
+	// on the 2-rank laptop build via Benchmark_dwf's sloppy Cshift
+	// check).  GRID_SIMT keeps the optimisation; CPU loops the lanes.
 	accelerator_forNB(ss,outer,nsimd,{
+#ifdef GRID_SIMT
 	  int lane = acceleratorSIMTlane(nsimd);
 	  dbuf[ss*nsimd+lane] = fbuf[ss*nsimd+lane]; //conversion
+#else
+	  for(int lane=0;lane<nsimd;lane++)
+	    dbuf[ss*nsimd+lane] = fbuf[ss*nsimd+lane]; //conversion
+#endif
 	});
 
       } else if ( sizeof(word)==4){
@@ -467,8 +481,13 @@ public:
 	uint16_t *hbuf =(uint16_t *) packet.compressed_recv_buf;
 
 	accelerator_forNB(ss,outer,nsimd,{
+#ifdef GRID_SIMT
 	  int lane = acceleratorSIMTlane(nsimd);
 	  fbuf[ss*nsimd+lane] = ((uint32_t)hbuf[ss*nsimd+lane])<<16; //copy back and pad each word with zeroes
+#else
+	  for(int lane=0;lane<nsimd;lane++)
+	    fbuf[ss*nsimd+lane] = ((uint32_t)hbuf[ss*nsimd+lane])<<16; //copy back and pad each word with zeroes
+#endif
 	});
 
       } else {
@@ -515,9 +534,15 @@ public:
 	double *dbuf =(double *) packet.send_buf;
 	float  *fbuf =(float  *) packet.compressed_send_buf;
 
+	// BUG FIX 2026-09-07: CPU lane coverage -- see DecompressPacket.
 	accelerator_forNB(ss,outer,nsimd,{
+#ifdef GRID_SIMT
 	  int lane = acceleratorSIMTlane(nsimd);
 	  fbuf[ss*nsimd+lane] = dbuf[ss*nsimd+lane]; // convert fp64 to fp32
+#else
+	  for(int lane=0;lane<nsimd;lane++)
+	    fbuf[ss*nsimd+lane] = dbuf[ss*nsimd+lane]; // convert fp64 to fp32
+#endif
 	});
 
       } else if ( sizeof(word)==4){
@@ -526,8 +551,13 @@ public:
 	uint16_t *hbuf =(uint16_t *) packet.compressed_send_buf;
 	
 	accelerator_forNB(ss,outer,nsimd,{
+#ifdef GRID_SIMT
 	  int lane = acceleratorSIMTlane(nsimd);
 	  hbuf[ss*nsimd+lane] = fbuf[ss*nsimd+lane]>>16; // convert as in Bagel/BFM ; bfloat16 ; s7e8 Intel patent
+#else
+	  for(int lane=0;lane<nsimd;lane++)
+	    hbuf[ss*nsimd+lane] = fbuf[ss*nsimd+lane]>>16; // convert as in Bagel/BFM ; bfloat16 ; s7e8 Intel patent
+#endif
 	});
 
       } else {
