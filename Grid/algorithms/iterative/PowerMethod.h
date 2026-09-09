@@ -59,7 +59,7 @@ template<class Field> class PowerMethod
 //            |lambda_max| -- the case where the numerical range extends beyond
 //            the spectrum and a spectrum-based smoother/Chebyshev bound is
 //            unsafe (the field of values must be used instead).
-template<class Field> class NonHermitianPowerMethod
+template<class Field> class PowerMethodNonHermitian
 {
  public:
 
@@ -88,17 +88,17 @@ template<class Field> class NonHermitianPowerMethod
 
       if ( i==0 ) {
         ratio0 = ratio;
-        std::cout << GridLogMessage << "NonHermitianPowerMethod: step 0 (random v): |Av|/|v| = "
+        std::cout << GridLogMessage << "PowerMethodNonHermitian: step 0 (random v): |Av|/|v| = "
                   << ratio << "   [lower bound on sigma_max]" << std::endl;
       }
       if ( (i%10==0) || (i==_MAX_ITER_EST_-1) )
-        std::cout << GridLogMessage << "NonHermitianPowerMethod: step " << i << " |Av|/|v| = " << ratio
+        std::cout << GridLogMessage << "PowerMethodNonHermitian: step " << i << " |Av|/|v| = " << ratio
                   << "  Rayleigh (" << real(rq) << "," << imag(rq) << ")" << std::endl;
 
       v = Av;
     }
 
-    std::cout << GridLogMessage << "NonHermitianPowerMethod: |lambda_max| ~ " << ratio
+    std::cout << GridLogMessage << "PowerMethodNonHermitian: |lambda_max| ~ " << ratio
               << "  Rayleigh (" << real(rq) << "," << imag(rq) << ")"
               << "  phase " << atan2(imag(rq),real(rq)) << " rad"
               << "  step-0/converged = " << ratio0/ratio
