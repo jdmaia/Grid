@@ -88,16 +88,14 @@ public:
   double                  telLeafMaxInv;
   uint64_t                nLeaf;
   // BIG LEAVES.  Below span s blocks a sub-block lives on <= s of the Pr
-  // process rows / s of the Pc columns; when s is small RELATIVE TO THE
-  // GRID the SUMMA rings run on a few ranks while the rest block in their
-  // next SendToRecvFrom (histogram 2026-08-27: 93% of ring time in the
-  // 3.7 MB single-block panels of exactly these levels).  Instead: gather
-  // the (s*nb)^2 sub-block to one rank, invert locally (inverseLU), scatter
-  // back.  Fires only while span < min(Pr,Pc) -- when the whole grid
-  // participates the rings are not degenerate and gathering would only
-  // concentrate memory (and at the top of the tree, gather the whole
-  // matrix).  Default 9: banked on Frontier 2026-08-27 (invert 132 -> 27.6 s
-  // at N=138240 on a 16x18 grid; s=18 gave 30.6, s=4 37.0).
+  // process rows / s of the Pc columns; when s is small relative to the grid
+  // the SUMMA rings run on a few ranks while the rest block in their next
+  // SendToRecvFrom.  Instead: gather the (s*nb)^2 sub-block to one rank,
+  // invert locally (inverseLU), scatter back.  Fires only while
+  // span < min(Pr,Pc) -- when the whole grid participates the rings are not
+  // degenerate and gathering would only concentrate memory (and at the top
+  // of the tree would gather the whole matrix).  Larger s concentrates more
+  // memory on the root; smaller s loses ring parallelism.
   int                     leafSpan = 9;
   uint64_t                nBigLeaf = 0;  int64_t maxBigW = 0;
   double                  tBigGather = 0, tBigInv = 0, tBigScatter = 0;

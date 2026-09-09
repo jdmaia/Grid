@@ -453,15 +453,11 @@ public:
 	double *dbuf =(double *) packet.recv_buf;
 	float  *fbuf =(float  *) packet.compressed_recv_buf;
 
-	// BUG FIX 2026-09-07: the lane structure is a carefully designed
-	// GPU optimisation -- lane = threadIdx.y puts adjacent threads on
-	// adjacent words, fully coalesced.  On CPU builds there are no
-	// SIMT lanes and acceleratorSIMTlane() is identically zero, so
-	// this loop converted only 1/nsimd of the words and the rest of
-	// the halo silently kept STALE buffer content (deterministic
-	// wrong answers whenever the previous occupant differed; caught
-	// on the 2-rank laptop build via Benchmark_dwf's sloppy Cshift
-	// check).  GRID_SIMT keeps the optimisation; CPU loops the lanes.
+	// The lane index is a GPU coalescing optimisation: lane = threadIdx.y
+	// puts adjacent threads on adjacent words.  On a CPU build there are no
+	// SIMT lanes and acceleratorSIMTlane() is identically zero, so the plain
+	// form would convert only 1 word of every nsimd; the #else covers all
+	// lanes explicitly.
 	accelerator_forNB(ss,outer,nsimd,{
 #ifdef GRID_SIMT
 	  int lane = acceleratorSIMTlane(nsimd);
@@ -534,7 +530,7 @@ public:
 	double *dbuf =(double *) packet.send_buf;
 	float  *fbuf =(float  *) packet.compressed_send_buf;
 
-	// BUG FIX 2026-09-07: CPU lane coverage -- see DecompressPacket.
+	// CPU lane coverage as in DecompressPacket.
 	accelerator_forNB(ss,outer,nsimd,{
 #ifdef GRID_SIMT
 	  int lane = acceleratorSIMTlane(nsimd);

@@ -27,7 +27,7 @@ Author: Peter Boyle <pboyle@bnl.gov>
 //   ./Example_pvdagm_multigrid --grid 48.48.48.96 --mpi ... \
 //                              --pvdagm-params params.xml
 //
-// With no --pvdagm-params the banked defaults run (hot-start gauge field
+// With no --pvdagm-params the built-in defaults run (hot-start gauge field
 // unless Config is set in the file).  A missing file gets a template
 // written next to it and the program exits: the template documents every
 // parameter.  The effective parameters are always printed, so the log

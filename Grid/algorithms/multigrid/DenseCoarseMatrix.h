@@ -51,9 +51,7 @@ NAMESPACE_BEGIN(Grid);
 //    complement (BlockCyclicSchurInverse): fp64 rank-major import ->
 //    RowsToCyclic -> in-place recursion (pure point-to-point SUMMA rings and
 //    local leaves; bitwise reproducible) -> CyclicToRows -> ONE terminal
-//    rounding into the fp32 apply slab.  Distributed at every N and P; banked
-//    3.87x against its retired 1D predecessor and >10x against SLATE at
-//    N=138240 on 288 GCDs.
+//    rounding into the fp32 apply slab.  Distributed at every N and P.
 //
 //  - Split-K apply through GridBLAS.gemmBatched with EXPLICIT leading dimensions
 //    (arXiv:2409.03904 fig 11): the tiny-output/huge-K GEMM Y = slab^T X becomes
@@ -213,8 +211,7 @@ public:
         GRID_ASSERT( l2r[myLex] == grid->ThisRank() );
         // x and the slab columns are in GLOBAL-SITE order (hX[myGsite*nbasis+b]);
         // the gathered blocks are in RANK-MAJOR order (rank*nrows + ss*nbasis + b).
-        // On one rank the two coincide, which is how the laptop passed while
-        // Frontier VERIFYed 0.9965 (2026-08-27).  Scatter through the inverse map.
+        // The two coincide only on one rank, so scatter through the inverse map.
         std::vector<int64_t> g2rm; BuildRankMajorMap(g2rm);
         std::vector<int64_t> rm2g(N); for(int64_t g=0; g<N; g++) rm2g[g2rm[g]] = g;
         for(int ss=0; ss<lsites; ss++) GRID_ASSERT( rm2g[(int64_t)grid->ThisRank()*nrows + (int64_t)ss*nbasis] == myGsite[ss]*nbasis );
@@ -320,11 +317,7 @@ public:
         // The operator contracts out(s,b) = sum_a A[p](s)(a,b) in(nbr,a)
         // (GeneralCoarsenedMatrix.h Mult kernel): the stored site matrix
         // acts TRANSPOSED, so element (a,b) lands at dense row (s,b),
-        // column (nbr,a).  BUG LEDGER 2026-08-14: the original mapping
-        // wrote (s,a),(nbr,b) -- caught by the IMPORT CERTIFICATE on its
-        // FIRST fresh-import exercise (Test_schur_dense_coarse); every
-        // production slab predated this path (probe-import era), so no
-        // production output is suspect.
+        // column (nbr,a).
         for(int b=0; b<nbasis; b++){
           ComplexF *row = &slab[(uint64_t)(ss*nbasis+b)*N + nsite*nbasis];
           for(int a=0; a<nbasis; a++)
@@ -552,11 +545,10 @@ public:
   }
 
   ////////////////////////////////////////////////////////////////////
-  // 3c. The inverse: distributed recursive Schur, END-TO-END fp64 (decision
-  //    2026-08-14): stencil (ComplexD) -> fp64 rank-major import ->
-  //    fp64 recursion -> ONE terminal rounding into the fp32 apply
-  //    slab.  Everything downstream (device residency, split-K apply,
-  //    VERIFY) is untouched.
+  // 3c. The inverse: distributed recursive Schur, END-TO-END fp64.
+  //    stencil (ComplexD) -> fp64 rank-major import -> fp64 recursion ->
+  //    ONE terminal rounding into the fp32 apply slab.  Everything
+  //    downstream (device residency, split-K apply, VERIFY) is fp32.
   ////////////////////////////////////////////////////////////////////
   template<class CoarseOp>
   void InvertDense(CoarseOp &Op)

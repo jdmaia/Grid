@@ -63,11 +63,6 @@ public:
   void OpDir  (const Field &in, Field &out,int dir,int disp) { GRID_ASSERT(0); }
   void OpDirAll  (const Field &in, std::vector<Field> &out){ GRID_ASSERT(0); };
   void Op     (const Field &in, Field &out){ Field tmp(in.Grid()); _Mat.M(in,tmp); _PV.Mdag(tmp,out); out = out + shift*in; }
-  // BUG LEDGER 2026-09-06: the example-local original read
-  //   _PV.M(tmp,out); _Mat.Mdag(in,tmp);
-  // consuming tmp before writing it -- latent, never exercised (nothing in
-  // the chain calls AdjOp on the shifted fine operator).  Corrected here to
-  // the adjoint of Op, matching PVdagMLinearOperator::AdjOp plus the shift.
   void AdjOp  (const Field &in, Field &out){ Field tmp(in.Grid()); _PV.M(in,tmp); _Mat.Mdag(tmp,out); out = out + shift*in; }
   void HermOpAndNorm(const Field &in, Field &out,RealD &n1,RealD &n2){ GRID_ASSERT(0); }
   void HermOp(const Field &in, Field &out){ Field tmp(in.Grid()); Op(in,tmp); AdjOp(tmp,out); }
@@ -89,9 +84,5 @@ public:
   void HermOpAndNorm(const Field &in, Field &out,RealD &n1,RealD &n2){ GRID_ASSERT(0); }
   void HermOp  (const Field &in, Field &out) { Field tmp(in.Grid()); Op(in,tmp); AdjOp(tmp,out); }
 };
-
-// The non-Hermitian spectral-edge diagnostic that used to live here as
-// PowerIteration() now lives beside its Hermitian sibling as
-// Grid::NonHermitianPowerMethod (Grid/algorithms/iterative/PowerMethod.h).
 
 NAMESPACE_END(Grid);

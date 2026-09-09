@@ -29,17 +29,13 @@ NAMESPACE_BEGIN(Grid);
 // sub-structs for the Hermitian chain.  Read from XML (or JSON -- the
 // serialisation macros give both) via ReadPVdagMMultiGridParams below and
 // printed at startup by the macro's operator<<, so every log identifies its
-// own run.  The constructor defaults ARE the banked optimum; an
-// unconfigured run reproduces the best recorded point.  Update them when a
-// better point is banked, and date the change.
+// own run.  The constructor defaults ARE a tuned operating point, not
+// arbitrary: an unconfigured run reproduces it, so changing them changes what
+// an unconfigured run does.  Smoother mmax == nstep (full GCR history).
 //
-// Current optimum: 2026-08-24, slurm-5335492 F4, 48^3x96 Ls=24 on 288 GCDs,
-//   17.2 s/RHS at Nrhs=4, 32.2 s at Nrhs=1 (exact-halo FINAL ~1e-8).
-//   Smoother mmax == nstep (full GCR history).
-//
-// There are NO environment-variable controls anywhere in this subsystem
-// (ruling 2026-09-05): parameters live here, library-internal constants are
-// hard defaults in their classes, verbosity is the --log channels.
+// There are NO environment-variable controls anywhere in this subsystem:
+// parameters live here, library-internal constants are hard defaults in their
+// classes, verbosity is the --log channels.
 // Research instruments (GCR coefficient recording/replay, Chebyshev and
 // stationary smoother variants, power iteration) are deliberately NOT part
 // of this interface: they remain programmatic, for algorithmic studies,
@@ -77,7 +73,7 @@ struct MGOuterParams : Serializable {
 
 struct MGDenseParams : Serializable {
   GRID_SERIALIZABLE_CLASS_MEMBERS(MGDenseParams,
-                                  int, LeafSpan);   // big-leaf span in blocks (banked 9); see BlockCyclicSchurInverse
+                                  int, LeafSpan);   // big-leaf span in blocks; see BlockCyclicSchurInverse
   MGDenseParams() : LeafSpan(9) {};
 };
 
