@@ -24,9 +24,16 @@
 # The binary must be built with -DNBASIS=64 to match the subspace file.
 ##############################################################################
 
+root=$HOME/PVdagM/Grid/systems/Frontier
+source $root/sourceme-rocm7.2.sh
+
+# Paths substituted into the XML below.
 LUSTRE=/lustre/orion/phy157/proj-shared/phy157_dwf/paboyle
+SUBSPACE=$LUSTRE/subspace_nb64.scidac
+CONFIG=/ccs/home/paboyle/configs/ckpoint_lat.1000
 RUNDIR=$LUSTRE/runs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}
 mkdir -p $RUNDIR && cd $RUNDIR && echo "RUNDIR $RUNDIR"
+
 
 cat << EOF > select_gpu
 #!/bin/bash
@@ -41,10 +48,6 @@ exec numactl -m \$NUMA -N \$NUMA \$*
 EOF
 chmod +x ./select_gpu
 
-root=$HOME/ParallelIO/systems/Frontier
-source $root/sourceme-rocm7.2.sh
-# sourceme sets FI_HMEM_ROCR_USE_DMABUF=0 -- the standing avoidance of the CXI
-# NO_TRANSLATION fault at NRHS>=12 (libfabric #12775).
 
 export OMP_NUM_THREADS=7
 ulimit -c 0                             # no 22 GB GPU core dumps
@@ -52,17 +55,19 @@ export FI_MR_CACHE_MONITOR=kdreg2       # site default; device-buffer MPI on Sli
 export MPICH_GPU_SUPPORT_ENABLED=1
 export MPICH_SMP_SINGLE_COPY_MODE=CMA
 export MPICH_OFI_NIC_POLICY=GPU
-export GRID_ALLOC_NCACHE_LARGE=64       # allocator large-ring depth (Grid allocator, not a solver knob)
+
+#### This raise the probability of failure ####
+export GRID_ALLOC_NCACHE_LARGE=0       # allocator large-ring depth (Grid allocator, not a solver knob) -- default is 8
+##############################################################################
+
+
 module load libfabric
 
 BIN=$root/examples/Example_pvdagm_multigrid
-OPTS="--accelerator-threads 8 --shm 4096 --shm-mpi 1 --device-mem 32000 --comms-overlap"
+OPTS="--accelerator-threads 8 --shm 4096 --shm-mpi 0 --device-mem 32000 --comms-overlap"
 vol=48.48.48.96
 MPI_GEOM=3.6.4.4
 
-# Paths substituted into the XML below.
-SUBSPACE=$LUSTRE/subspace_nb64.scidac
-CONFIG=/ccs/home/poare/ckpoint_lat.1000     # gauge field (empty => hot start)
 
 ##############################################################################
 # The parameter file.  Values are the banked adaptive operating point carried
@@ -127,7 +132,17 @@ run_cell () {
   fi
 }
 
-# Two identical cells: the NRHS>=12 fault was intermittent (~1/3) before the
+# the NRHS>=12 fault was intermittent (~1/3) before the
 # dmabuf avoidance, so run it twice to confirm a clean pair.
-run_cell  run1
-run_cell  run2
+
+# sourceme sets FI_HMEM_ROCR_USE_DMABUF=0 -- the standing avoidance of the CXI
+# NO_TRANSLATION fault at NRHS>=12 (libfabric #12775).
+export FI_HMEM_ROCR_USE_DMABUF=0
+run_cell  dmabuf0_run1 
+run_cell  dmabuf0_run2 
+run_cell  dmabuf0_run3 
+
+export FI_HMEM_ROCR_USE_DMABUF=1
+run_cell  dmabuf1_run1 
+run_cell  dmabuf1_run2 
+run_cell  dmabuf1_run3 
