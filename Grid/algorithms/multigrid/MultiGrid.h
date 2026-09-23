@@ -35,3 +35,8 @@ Author: Peter Boyle <pboyle@bnl.gov>
 #include <Grid/algorithms/multigrid/GeneralCoarsenedMatrixMultiRHSV2.h>
 #include <Grid/algorithms/multigrid/MrhsPromotedOperator.h>
 #include <Grid/algorithms/multigrid/Smoothers.h>
+#include <Grid/algorithms/multigrid/PVdagMMultiGridParams.h>
+// PVdagMOperators.h / MrhsMultiGrid.h / PVdagMMultiGrid.h /
+// DenseCoarseMatrix.h are NOT in this umbrella: consumers of the PVdagM
+// chain include PVdagMMultiGrid.h explicitly (it pulls the dense stack
+// and BLAS).

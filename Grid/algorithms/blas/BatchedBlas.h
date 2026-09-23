@@ -995,7 +995,7 @@ public:
   ///////////////////////////////////////////////////////////////////////////////////
   // Explicit-leading-dimension complex double GEMM.  Mirror of the ComplexF
   // overload above; motivating use is the fp64 distributed recursive Schur
-  // inversion (RecursiveSchurInverse), whose operands are column windows of
+  // inversion (the distributed Schur recursion), whose operands are column windows of
   // larger row-slab allocations.
   ///////////////////////////////////////////////////////////////////////////////////
   void gemmBatched(GridBLASOperation_t OpA,
